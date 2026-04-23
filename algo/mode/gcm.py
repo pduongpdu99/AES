@@ -1,7 +1,4 @@
 import os
-from tqdm import tqdm
-
-from algo.aes import AES
 from algo.utils import xor_blocks
 from algo.file_tools import FileTools
 
@@ -61,16 +58,28 @@ class GCM:
 
         return f"{y:032x}"
 
-    # ====================== ENCRYPT / DECRYPT ======================
     def encrypt(self, infile, outfile, aad=b""):
-        # 1. Đọc dữ liệu thô
+        # 1. Đọc dữ liệu thô từ file
         with open(infile, "rb") as f:
             data = f.read()
 
-        aad_hex = aad.hex() if isinstance(aad, (bytes, bytearray)) else aad
+        # --- CẬP NHẬT: Chuẩn hóa AAD sang Hex ---
+        # Nếu là string (ví dụ: "UserID:123"), encode sang bytes rồi chuyển hex
+        if isinstance(aad, str):
+            try:
+                # Thử xem có phải chuỗi hex sẵn không
+                int(aad, 16)
+                aad_hex = aad
+            except ValueError:
+                # Nếu không phải hex, thì đây là văn bản thuần -> encode utf-8
+                aad_hex = aad.encode('utf-8').hex()
+        elif isinstance(aad, (bytes, bytearray)):
+            aad_hex = aad.hex()
+        else:
+            aad_hex = ""
 
         # 2. Khởi tạo Counter (J0 = Nonce || 00000001)
-        # Mã hóa bắt đầu từ J0 + 1
+        # Quá trình mã hóa thực tế bắt đầu từ J0 + 1 (tức là đuôi 00000002)
         nonce_bytes = bytes.fromhex(self.nonce)
         counter_int = int.from_bytes(nonce_bytes + b'\x00\x00\x00\x02', 'big')
 
@@ -79,24 +88,31 @@ class GCM:
         # 3. CTR Mode Encryption
         for i in range(0, len(data), 16):
             plain_hex = data[i:i+16].hex()
+            # Tạo keystream bằng cách mã hóa giá trị counter
             keystream = self.aes.cipher(counter_int.to_bytes(16, 'big').hex())
 
+            # XOR keystream với plaintext
             cipher_block = xor_blocks(keystream, plain_hex)
+
+            # Giữ đúng độ dài cho khối cuối (nếu lẻ)
             actual_len = len(data[i:i+16]) * 2
             ciphertext_blocks.append(cipher_block[:actual_len])
 
             counter_int += 1
 
-        # 4. Tính toán Tag
+        # 4. Tính toán Authentication Tag
+        # h = E(K, 0^128)
         h = self.aes.cipher("0" * 32)
         ct_hex_full = "".join(ciphertext_blocks)
+
+        # Gọi hàm GHASH với AAD và Ciphertext đã chuẩn hóa
         ghash_res = self._ghash(h, aad_hex, ct_hex_full)
 
-        # E(K, J0) để làm mặt nạ cho Tag
+        # Tạo mặt nạ cho Tag bằng E(K, J0) - đuôi 00000001
         e0 = self.aes.cipher(self.nonce + "00000001")
         tag = xor_blocks(ghash_res, e0)[:self.tag_length * 2]
 
-        # 5. Ghi file theo cấu trúc: Nonce(12) + Ciphertext + Tag(16)
+        # 5. Ghi file theo cấu trúc chuẩn: Nonce(12 bytes) + Ciphertext + Tag(16 bytes)
         with open(outfile, "wb") as f:
             f.write(bytes.fromhex(self.nonce))
             for block in ciphertext_blocks:

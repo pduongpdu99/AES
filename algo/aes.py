@@ -64,7 +64,6 @@ class AES:
         return state
 
     def _matrix2text(self, state):
-        # <<< SỬA: đúng thứ tự
         return ''.join(format(state[i][j], '02x') for j in range(4) for i in range(4))
 
     def _sub_bytes(self, s):
